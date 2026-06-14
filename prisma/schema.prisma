@@ -1,0 +1,86 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Device {
+  id        String   @id @default(cuid())
+  serial    String   @unique
+  publicKey String   @map("public_key")
+  ownerId   String   @map("owner_id")
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  billingRecords BillingRecord[]
+  telemetryData  TelemetryData[]
+
+  @@map("devices")
+}
+
+model Account {
+  id              String   @id @default(cuid())
+  stellarAddress  String   @unique @map("stellar_address")
+  balance         BigInt   @default(0)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  billingRecords  BillingRecord[]
+  webhookSecrets  WebhookSecret[]
+
+  @@map("accounts")
+}
+
+model BillingRecord {
+  id          String   @id @default(cuid())
+  deviceId    String   @map("device_id")
+  accountId   String   @map("account_id")
+  usageAmount BigInt   @map("usage_amount")
+  txHash      String?  @map("tx_hash")
+  status      String   @default("pending")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  device Device @relation(fields: [deviceId], references: [id])
+  account Account @relation(fields: [accountId], references: [id])
+
+  @@map("billing_records")
+}
+
+model TelemetryData {
+  id          String   @id @default(cuid())
+  deviceId    String   @map("device_id")
+  metricId    Int      @map("metric_id")
+  metricValue Float    @map("metric_value")
+  ingestedAt  DateTime @default(now()) @map("ingested_at")
+
+  device Device @relation(fields: [deviceId], references: [id])
+
+  @@map("telemetry_data")
+}
+
+model IngestionJob {
+  id         String   @id @default(cuid())
+  deviceId   String   @map("device_id")
+  status     String   @default("pending")
+  stateData  Json?    @map("state_data")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@map("ingestion_jobs")
+}
+
+model WebhookSecret {
+  id        String   @id @default(cuid())
+  accountId String   @map("account_id")
+  secret    String
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  account Account @relation(fields: [accountId], references: [id])
+
+  @@map("webhook_secrets")
+}
