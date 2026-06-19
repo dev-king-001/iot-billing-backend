@@ -1,36 +1,36 @@
 import { describe, it, expect } from 'vitest';
-import { ZkRangeProofVerifier, RangeProof } from '../../src/core/crypto/zk_verifier.js';
+import { ZkRangeProofVerifier, RangeProofGenerator } from '../../src/core/crypto/zk_verifier.js';
+import { Buffer } from 'node:buffer';
 import { SafeMath } from '../../src/core/utils/math.js';
 
 describe('ZkRangeProofVerifier', () => {
   const verifier = new ZkRangeProofVerifier();
 
-  it('should reject invalid range (lower > upper)', () => {
-    const proof: RangeProof = {
-      commitment: 'a'.repeat(64),
-      proofData: 'proof_data',
-      lowerBound: 100n,
-      upperBound: 50n,
-      challenge: 'abc',
-      response: 'def',
-    };
-    const result = verifier.verifyRangeProof(proof, new Uint8Array(32));
+  it('should verify a valid generated proof', () => {
+    const proof = RangeProofGenerator.generate(50n, 'device-123', 0n, 100n);
+    const result = verifier.verifyRangeProof(proof, 'device-123', 0n, 100n);
+    expect(result.valid).toBe(true);
+  });
+
+  it('should reject invalid range (lower >= upper)', () => {
+    const proof = Buffer.alloc(64);
+    const result = verifier.verifyRangeProof(proof, 'device-123', 100n, 50n);
     expect(result.valid).toBe(false);
     expect(result.reason).toContain('range');
   });
 
   it('should reject invalid commitment length', () => {
-    const proof: RangeProof = {
-      commitment: 'short',
-      proofData: 'proof_data',
-      lowerBound: 0n,
-      upperBound: 100n,
-      challenge: 'abc',
-      response: 'def',
-    };
-    const result = verifier.verifyRangeProof(proof, new Uint8Array(32));
+    const proof = Buffer.alloc(32); // short proof
+    const result = verifier.verifyRangeProof(proof, 'device-123', 0n, 100n);
     expect(result.valid).toBe(false);
     expect(result.reason).toContain('commitment');
+  });
+
+  it('should reject proof bound to wrong device', () => {
+    const proof = RangeProofGenerator.generate(50n, 'device-123', 0n, 100n);
+    const result = verifier.verifyRangeProof(proof, 'wrong-device', 0n, 100n);
+    expect(result.valid).toBe(false);
+    expect(result.reason).toContain('Challenge-response');
   });
 });
 
