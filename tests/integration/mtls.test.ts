@@ -34,6 +34,13 @@ describe('mTLS Gateway Verifier Integration', () => {
 
     // Start mock OCSP server
     ocspApp = Fastify();
+    ocspApp.addContentTypeParser(
+      'application/ocsp-request',
+      { parseAs: 'buffer' },
+      (_req, body, done) => {
+        done(null, body);
+      },
+    );
     ocspApp.post('/ocsp', async () => {
       await Promise.resolve();
       return ocspStatus;
