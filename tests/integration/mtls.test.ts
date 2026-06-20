@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { MtlsGatewayVerifier } from '../../src/api/gateway/mtls_verifier.js';
 import { PrismaClient } from '@prisma/client';
+import { closeRedis } from '../../src/database/redis.js';
 import Fastify from 'fastify';
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -46,6 +47,7 @@ describe('mTLS Gateway Verifier Integration', () => {
     });
     await prisma.$disconnect();
     await ocspApp.close();
+    await closeRedis();
   });
 
   function generateCert(serialHex: string): string {
