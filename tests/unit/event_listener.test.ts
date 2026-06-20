@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import type { MockInstance } from 'vitest';
+import type { MockInstance, Mock } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { LedgerEventSynchronizer } from '../../src/core/blockchain/event_listener.js';
 import { registerAdminRoutes } from '../../src/api/routes/admin.js';
@@ -7,7 +7,14 @@ import { clearEnvCache } from '../../src/config/env.js';
 
 // ─── Prisma mock factory ───────────────────────────────────────────────────
 
-function makePrismaMock(foundRow: { lastSyncedLedger: number } | null = null) {
+interface PrismaMock {
+  ledgerSyncState: {
+    findUnique: Mock;
+    upsert: Mock;
+  };
+}
+
+function makePrismaMock(foundRow: { lastSyncedLedger: number } | null = null): PrismaMock {
   return {
     ledgerSyncState: {
       findUnique: vi.fn().mockResolvedValue(foundRow),
@@ -18,15 +25,15 @@ function makePrismaMock(foundRow: { lastSyncedLedger: number } | null = null) {
 
 // ─── Fetch mock helpers ────────────────────────────────────────────────────
 
-function makeLedgerResponse(seq: number) {
+function makeLedgerResponse(seq: number): Promise<Response> {
   return Promise.resolve(
     new Response(
-      JSON.stringify({ sequence: seq, hash: `hash${seq}`, closedAt: '', transactions: [] }),
+      JSON.stringify({ sequence: seq, hash: `hash${String(seq)}`, closedAt: '', transactions: [] }),
     ),
   );
 }
 
-function makeLatestResponse(seq: number) {
+function makeLatestResponse(seq: number): Promise<Response> {
   return Promise.resolve(new Response(JSON.stringify({ sequence: seq })));
 }
 
@@ -72,7 +79,7 @@ describe('LedgerEventSynchronizer', () => {
   it('catchUp fetches all ledgers in parallel batches', async () => {
     const prisma = makePrismaMock(null);
     fetchSpy.mockImplementation((url: string) => {
-      const seqMatch = /\/ledgers\/(\d+)$/.exec(url as string);
+      const seqMatch = /\/ledgers\/(\d+)$/.exec(url);
       if (seqMatch) return makeLedgerResponse(Number(seqMatch[1]));
       return makeLatestResponse(0);
     });
@@ -89,8 +96,8 @@ describe('LedgerEventSynchronizer', () => {
     await sync.catchUp(0, 15);
 
     // fetchLedger is called once per ledger (15 calls)
-    const ledgerFetches = fetchSpy.mock.calls.filter(([url]) =>
-      /\/ledgers\/\d+$/.test(url as string),
+    const ledgerFetches = fetchSpy.mock.calls.filter(([url]: [string]) =>
+      /\/ledgers\/\d+$/.test(url),
     );
     expect(ledgerFetches).toHaveLength(15);
     expect(sync.getSyncState().lastSyncedLedger).toBe(15);
@@ -99,7 +106,7 @@ describe('LedgerEventSynchronizer', () => {
   it('catchUp checkpoints at 64-ledger boundaries', async () => {
     const prisma = makePrismaMock(null);
     fetchSpy.mockImplementation((url: string) => {
-      const seqMatch = /\/ledgers\/(\d+)$/.exec(url as string);
+      const seqMatch = /\/ledgers\/(\d+)$/.exec(url);
       if (seqMatch) return makeLedgerResponse(Number(seqMatch[1]));
       return makeLatestResponse(0);
     });
@@ -125,14 +132,14 @@ describe('LedgerEventSynchronizer', () => {
     let callCount = 0;
 
     fetchSpy.mockImplementation((url: string) => {
-      const seqMatch = /\/ledgers\/5$/.exec(url as string);
+      const seqMatch = /\/ledgers\/5$/.exec(url);
       if (seqMatch) {
         callCount++;
         if (callCount < 3) {
           return Promise.reject(new Error('transient network error'));
         }
       }
-      const anySeq = /\/ledgers\/(\d+)$/.exec(url as string);
+      const anySeq = /\/ledgers\/(\d+)$/.exec(url);
       if (anySeq) return makeLedgerResponse(Number(anySeq[1]));
       return makeLatestResponse(0);
     });
@@ -159,10 +166,10 @@ describe('LedgerEventSynchronizer', () => {
     const prisma = makePrismaMock(null);
 
     fetchSpy.mockImplementation((url: string) => {
-      if (/\/ledgers\/3$/.test(url as string)) {
+      if (url.endsWith('/ledgers/3')) {
         return Promise.reject(new Error('permanent failure'));
       }
-      const seqMatch = /\/ledgers\/(\d+)$/.exec(url as string);
+      const seqMatch = /\/ledgers\/(\d+)$/.exec(url);
       if (seqMatch) return makeLedgerResponse(Number(seqMatch[1]));
       return makeLatestResponse(0);
     });
@@ -204,8 +211,8 @@ describe('LedgerEventSynchronizer', () => {
     });
 
     fetchSpy.mockImplementation((url: string) => {
-      if (/\/ledgers\/latest$/.test(url as string)) return makeLatestResponse(20);
-      const seqMatch = /\/ledgers\/(\d+)$/.exec(url as string);
+      if (url.endsWith('/ledgers/latest')) return makeLatestResponse(20);
+      const seqMatch = /\/ledgers\/(\d+)$/.exec(url);
       if (seqMatch) {
         return ledgerFetchPaused.then(() => makeLedgerResponse(Number(seqMatch[1])));
       }
@@ -240,7 +247,7 @@ describe('LedgerEventSynchronizer', () => {
 describe('GET /api/admin/sync-status', () => {
   let app: FastifyInstance;
 
-  beforeEach(async () => {
+  beforeEach(() => {
     clearEnvCache();
     process.env['ADMIN_SECRET_KEY'] = 'test-admin-key';
     process.env['JWT_SECRET'] = 'a'.repeat(32);
