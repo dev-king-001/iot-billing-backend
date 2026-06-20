@@ -21,6 +21,8 @@ const envSchema = z.object({
   OTEL_SERVICE_NAME: z.string().default('iot-billing-backend'),
   MAX_PAYLOAD_SIZE_BYTES: z.coerce.number().int().positive().default(65536),
   NONCE_WINDOW_MS: z.coerce.number().int().positive().default(5000),
+  LEDGER_START: z.coerce.number().int().nonnegative().default(0),
+  LEDGER_SYNC_CONCURRENCY: z.coerce.number().int().positive().default(10),
 });
 
 export type Env = z.infer<typeof envSchema>;

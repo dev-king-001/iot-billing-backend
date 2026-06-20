@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { getEnv } from '../../config/env.js';
 import { IngestionStateMachine, IngestionState } from '../../core/ingestion/state_machine.js';
+import type { LedgerEventSynchronizer } from '../../core/blockchain/event_listener.js';
 
 interface ForceSettleBody {
   recordId: string;
@@ -48,7 +49,10 @@ function verifyAdminAuth(request: FastifyRequest, reply: FastifyReply): boolean 
   return true;
 }
 
-export function registerAdminRoutes(app: FastifyInstance): void {
+export function registerAdminRoutes(
+  app: FastifyInstance,
+  synchronizer?: LedgerEventSynchronizer,
+): void {
   /**
    * POST /api/admin/force-settle
    * Force a billing record into SETTLED state.
@@ -238,4 +242,21 @@ export function registerAdminRoutes(app: FastifyInstance): void {
       }
     },
   );
+
+  /**
+   * GET /api/admin/sync-status
+   * Returns the current ledger synchronizer state.
+   */
+  app.get('/api/admin/sync-status', async (request: FastifyRequest, reply: FastifyReply) => {
+    if (!verifyAdminAuth(request, reply)) return;
+
+    if (!synchronizer) {
+      return reply.status(503).send({
+        error: 'Sync service not available',
+        message: 'LedgerEventSynchronizer is not configured',
+      });
+    }
+
+    return reply.send({ ...synchronizer.getSyncState(), timestamp: Date.now() });
+  });
 }
