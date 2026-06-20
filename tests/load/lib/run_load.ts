@@ -60,19 +60,47 @@ interface CollectedSample {
 
 const CONNECT_TIMEOUT_MS = 5_000;
 const READ_TIMEOUT_MS = 10_000;
-const MAX_PORT_LENGTH = 6;
+/**
+ * Once the wall-clock deadline has elapsed, workers get a small grace
+ * window to finish their final iteration. The grace window matters
+ * because Node's fetch (Undici) can deadlock its global agent under
+ * the load suite's concurrent requests; an absolute deadline-relative
+ * abort guarantees `Promise.all` resolves instead of hanging the test
+ * runner.
+ */
+const WORKER_GRACE_MS = 2_000;
+const INGEST_PATH = '/ingest';
+
+/**
+ * Resolve the ingestion URL from whatever targetUrl string the caller
+ * supplies (with optional path) so workers always POST to /ingest.
+ * Accepts both `http://host:port` and `http://host:port/whatever`.
+ */
+function ingestUrl(targetUrl: string): string {
+  const base = new URL(targetUrl);
+  // Strip path/query so we don't double up if the caller already
+  // appended a trailing segment.
+  base.pathname = INGEST_PATH;
+  base.search = '';
+  return base.toString();
+}
 
 /**
  * Build a {@link RequestInit} that targets the ingestion endpoint.
  * Centralising this lets us swap query params / headers for profile
  * variants (e.g. mTLS client certs) without touching the worker loop.
+ *
+ * Headers are deliberately kept minimal. The default transport
+ * (Undici in Node 22) computes the correct Content-Length automatically
+ * for a string body. Manually setting either `Connection: close` or
+ * `Content-Length` produced spurious 422 responses under concurrent
+ * load against the Fastify mock server.
  */
 function buildFetchOptions(body: string, signal: AbortSignal): RequestInit {
   return {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Connection: 'keep-alive',
     },
     body,
     signal,
@@ -82,7 +110,8 @@ function buildFetchOptions(body: string, signal: AbortSignal): RequestInit {
 async function postOnce(
   url: string,
   body: string,
-  timeoutMs: number,
+  perCallTimeoutMs: number,
+  globalSignal: AbortSignal,
 ): Promise<{
   ok: boolean;
   status: number;
@@ -93,16 +122,26 @@ async function postOnce(
   const controller = new AbortController();
   const timeout = setTimeout(() => {
     controller.abort();
-  }, timeoutMs);
+  }, perCallTimeoutMs);
+  const onGlobalAbort = (): void => {
+    controller.abort();
+  };
+  if (globalSignal.aborted) {
+    controller.abort();
+  } else {
+    globalSignal.addEventListener('abort', onGlobalAbort, { once: true });
+  }
   const startedAt = performance.now();
   try {
-    const response = await fetch(url, buildFetchOptions(body, controller.signal));
+    const response = await fetch(
+      url,
+      buildFetchOptions(body, AbortSignal.any([controller.signal, globalSignal])),
+    );
     const latencyMs = performance.now() - startedAt;
     let parsed: IngestResponseBody | undefined;
     try {
       parsed = (await response.json()) as IngestResponseBody;
     } catch {
-      // Treat non-JSON response as opaque transport success/fail.
       parsed = undefined;
     }
     return {
@@ -117,14 +156,10 @@ async function postOnce(
     return { ok: false, status: 0, latencyMs, errorReason };
   } finally {
     clearTimeout(timeout);
+    globalSignal.removeEventListener('abort', onGlobalAbort);
   }
 }
 
-/**
- * Worker coroutine. A single worker represents one simulated device
- * producing one payload every `1 / payloadsPerSec` seconds until the
- * profile deadline elapses.
- */
 async function driveWorker(
   device: SimulatedDevice,
   cfg: Required<
@@ -132,16 +167,17 @@ async function driveWorker(
   > & {
     faultInjection: FaultInjectionConfig;
   },
-  _p99TargetMs: number,
   collected: CollectedSample[],
   startedAtMs: number,
   deadlineMs: number,
+  globalSignal: AbortSignal,
   log: (msg: string) => void,
 ): Promise<void> {
   const tickIntervalMs = Math.max(1, Math.floor(1000 / cfg.payloadsPerSec));
+  const ingestEndpoint = ingestUrl(cfg.targetUrl);
   let lastNonce: string = randomUUID();
 
-  while (true) {
+  while (!globalSignal.aborted) {
     const elapsedMs = Date.now() - startedAtMs;
     if (elapsedMs >= deadlineMs) {
       return;
@@ -152,30 +188,38 @@ async function driveWorker(
     if (fault === 'malformed') {
       payload = generateMalformedPayload(device);
     } else if (fault === 'expired') {
-      // Way outside the 5s sliding window - guaranteed rejection.
       payload = signPayload(
         device,
         buildUnsignedPayload(device, { timestampOverrideMs: Date.now() - 60_000 }),
       );
     } else if (fault === 'duplicate') {
-      // Reuse a nonce we already used on the PREVIOUS tick so the
-      // nonce cache will reject the retry. We send it twice on the
-      // same tick so it really exercises the replay CAS - not just
-      // the timestamp window.
       const replayPayload = signPayload(
         device,
         buildUnsignedPayload(device, { nonceOverride: lastNonce }),
       );
       lastNonce = replayPayload.nonce;
-      const replayBody = JSON.stringify({ payload: replayPayload, publicKey: device.publicKeyHex });
-      const firstResponse = await postOnce(cfg.targetUrl, replayBody, READ_TIMEOUT_MS);
+      const replayBody = JSON.stringify({
+        payload: replayPayload,
+        publicKey: device.publicKeyHex,
+      });
+      const firstResponse = await postOnce(
+        ingestEndpoint,
+        replayBody,
+        READ_TIMEOUT_MS,
+        globalSignal,
+      );
       collected.push({
         latencyMs: firstResponse.latencyMs,
         outcome:
           firstResponse.ok && firstResponse.parsed?.status === 'accepted' ? 'accepted' : 'rejected',
         reason: firstResponse.parsed?.reason ?? statusReason(firstResponse.status),
       });
-      const secondResponse = await postOnce(cfg.targetUrl, replayBody, READ_TIMEOUT_MS);
+      const secondResponse = await postOnce(
+        ingestEndpoint,
+        replayBody,
+        READ_TIMEOUT_MS,
+        globalSignal,
+      );
       collected.push({
         latencyMs: secondResponse.latencyMs,
         outcome:
@@ -184,7 +228,7 @@ async function driveWorker(
             : 'rejected',
         reason: secondResponse.parsed?.reason ?? statusReason(secondResponse.status),
       });
-      await sleepTick(tickIntervalMs, startedAtMs, deadlineMs);
+      await sleepTick(tickIntervalMs, startedAtMs, deadlineMs, globalSignal);
       continue;
     } else {
       payload = signPayload(device, buildUnsignedPayload(device));
@@ -192,7 +236,7 @@ async function driveWorker(
     }
 
     const body = JSON.stringify({ payload, publicKey: device.publicKeyHex });
-    const response = await postOnce(cfg.targetUrl, body, READ_TIMEOUT_MS);
+    const response = await postOnce(ingestEndpoint, body, READ_TIMEOUT_MS, globalSignal);
 
     let outcome: CollectedSample['outcome'];
     let reason: string | undefined;
@@ -214,32 +258,44 @@ async function driveWorker(
       log(`[${cfg.profile}] ${payload.deviceId} ${outcome} (${reason ?? 'n/a'})`);
     }
 
-    await sleepTick(tickIntervalMs, startedAtMs, deadlineMs);
+    await sleepTick(tickIntervalMs, startedAtMs, deadlineMs, globalSignal);
   }
 }
 
 function statusReason(status: number): string {
   if (status === 0) return 'transport';
   if (status >= 500) return 'server_error';
-  return `http_${status.toString().slice(0, MAX_PORT_LENGTH)}`;
+  return `http_${status.toString()}`;
 }
 
-async function sleepTick(tickMs: number, startedAtMs: number, deadlineMs: number): Promise<void> {
+async function sleepTick(
+  tickMs: number,
+  startedAtMs: number,
+  deadlineMs: number,
+  globalSignal: AbortSignal,
+): Promise<void> {
   const remaining = deadlineMs - (Date.now() - startedAtMs);
   if (remaining <= 0) return;
   const sleep = Math.min(tickMs, remaining);
-  await new Promise<void>((resolve) => setTimeout(resolve, sleep));
+  await Promise.race([
+    new Promise<void>((resolve) => setTimeout(resolve, sleep)),
+    new Promise<void>((resolve) => {
+      if (globalSignal.aborted) {
+        resolve();
+        return;
+      }
+      globalSignal.addEventListener(
+        'abort',
+        () => {
+          resolve();
+        },
+        { once: true },
+      );
+    }),
+  ]);
 }
 
-/**
- * Generate a payload whose signature bytes are random but the right
- * length - mirrors what an attacker with access to a stolen deviceId
- * but not its key would produce.
- */
 function generateMalformedPayload(device: SimulatedDevice): SignedTelemetryPayload {
-  // 64 random bytes is `nacl.sign.detached.sign`'s output length, so
-  // length checking alone will pass - only the actual `verify` call will
-  // reject this payload.
   const randomBytes = Buffer.from(new Uint8Array(64));
   for (let i = 0; i < 64; i++) {
     randomBytes[i] = Math.floor(Math.random() * 256);
@@ -258,12 +314,6 @@ function generateMalformedPayload(device: SimulatedDevice): SignedTelemetryPaylo
   };
 }
 
-/**
- * Spin up `concurrentClients` workers and aggregate their samples into
- * the final {@link LoadMetrics} document. This is the function the load
- * runner entrypoint calls; the per-profile tuning (steady / burst /
- * recovery) lives in {@link runProfile}.
- */
 export async function runLoad(opts: RunLoadOptions): Promise<LoadMetrics> {
   const log = opts.log ?? ((): void => undefined);
   const faultInjection: FaultInjectionConfig = {
@@ -295,22 +345,32 @@ export async function runLoad(opts: RunLoadOptions): Promise<LoadMetrics> {
     faultInjection,
   };
 
-  const workers: Promise<void>[] = [];
-  for (let i = 0; i < opts.concurrentClients; i++) {
-    const device = generateDevice(i);
-    const worker = driveWorker(
-      device,
-      cfg,
-      opts.p99TargetMs ?? 500,
-      collected,
-      startedAtMs,
-      deadlineMs,
-      log,
-    );
-    workers.push(worker);
-  }
+  const globalAbort = new AbortController();
+  const totalTimeoutMs = opts.durationSec * 1000 + WORKER_GRACE_MS;
+  const globalTimeout = setTimeout(() => {
+    globalAbort.abort();
+  }, totalTimeoutMs);
 
-  await Promise.all(workers);
+  const workers: Promise<void>[] = [];
+  try {
+    for (let i = 0; i < opts.concurrentClients; i++) {
+      const device = generateDevice(i);
+      const worker = driveWorker(
+        device,
+        cfg,
+        collected,
+        startedAtMs,
+        deadlineMs,
+        globalAbort.signal,
+        log,
+      );
+      workers.push(worker);
+    }
+    await Promise.all(workers);
+  } finally {
+    clearTimeout(globalTimeout);
+    globalAbort.abort();
+  }
 
   const finishedAt = new Date();
   const totalLatencies: number[] = [];
@@ -368,15 +428,6 @@ export async function runLoad(opts: RunLoadOptions): Promise<LoadMetrics> {
   };
 }
 
-/**
- * Profile-specific tuning. The defaults match the issue specification:
- *   - steady_state: 1 payload/sec/device for `durationSec`
- *   - burst: 8 payloads/sec/device for a SHORT duration (peak load)
- *   - recovery: drops to 0.25 payloads/sec/device for `durationSec`
- *     (system heat-dissipation / nonce-cache reclamation)
- *
- * Callers can override any field for CI smoke tests.
- */
 export function profileDefaults(profile: LoadProfile): Pick<RunLoadOptions, 'payloadsPerSec'> {
   switch (profile) {
     case 'steady_state':
@@ -396,8 +447,6 @@ async function assertTargetReachable(url: string): Promise<void> {
     controller.abort();
   }, CONNECT_TIMEOUT_MS);
   try {
-    // Probe `/health` - the mock server exposes it. Real staging uses
-    // the same convention so this works for both cases.
     const healthUrl = new URL('/health', url).toString();
     const response = await fetch(healthUrl, { signal: controller.signal });
     if (response.status >= 500) {
