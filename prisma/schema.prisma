@@ -95,3 +95,11 @@ model HardwareCertificate {
 
   @@map("hardware_certificates")
 }
+
+model LedgerSyncState {
+  syncId           String   @id @map("sync_id")
+  lastSyncedLedger Int      @map("last_synced_ledger")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  @@map("ledger_sync_state")
+}

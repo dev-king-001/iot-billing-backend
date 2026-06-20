@@ -1,5 +1,11 @@
+import type { PrismaClient } from '@prisma/client';
 import { getDiagnosticsTracer } from '../diagnostics/tracer.js';
 import { DOMAIN_BLOCKCHAIN, TELEMETRY_DOMAIN_ATTR } from '../diagnostics/sampler.js';
+
+const MAX_GAP = 172_800;
+const CHECKPOINT_INTERVAL = 64;
+const SYNC_ID = 'primary';
+const MAX_RETRIES = 3;
 
 interface LedgerEntry {
   sequence: number;
@@ -8,25 +14,51 @@ interface LedgerEntry {
   transactions: string[];
 }
 
-interface SyncState {
+export interface SyncState {
   lastSyncedLedger: number;
   targetLedger: number;
   inProgress: boolean;
+  lastCheckpointAt: Date | null;
+  errorCount: number;
+}
+
+interface SynchronizerOptions {
+  startingLedger?: number;
+  concurrency?: number;
+  pollIntervalMs?: number;
 }
 
 export class LedgerEventSynchronizer {
   private tracer = getDiagnosticsTracer();
-  private syncState: SyncState = {
-    lastSyncedLedger: 0,
-    targetLedger: 0,
-    inProgress: false,
-  };
-  private pollIntervalMs = 5000;
+  private lastSyncedLedger = 0;
+  private targetLedger = 0;
+  private inProgress = false;
+  private lastCheckpointAt: Date | null = null;
+  private errorCount = 0;
+  private readonly concurrency: number;
+  private readonly pollIntervalMs: number;
+  private readonly startingLedger: number;
   private intervalHandle: ReturnType<typeof setInterval> | null = null;
 
-  constructor(private rpcUrl: string) {}
+  constructor(
+    private prisma: PrismaClient,
+    private rpcUrl: string,
+    options: SynchronizerOptions = {},
+  ) {
+    this.startingLedger = options.startingLedger ?? 0;
+    this.concurrency = options.concurrency ?? 10;
+    this.pollIntervalMs = options.pollIntervalMs ?? 5000;
+  }
 
-  start(): void {
+  async start(): Promise<void> {
+    const state = await this.prisma.ledgerSyncState.findUnique({
+      where: { syncId: SYNC_ID },
+    });
+    this.lastSyncedLedger = state?.lastSyncedLedger ?? this.startingLedger;
+    console.log(
+      `LedgerEventSynchronizer: loaded lastSyncedLedger=${String(this.lastSyncedLedger)}`,
+    );
+
     this.intervalHandle = setInterval(() => {
       void this.pollLatestLedger();
     }, this.pollIntervalMs);
@@ -40,32 +72,73 @@ export class LedgerEventSynchronizer {
   }
 
   async catchUp(fromLedger: number, toLedger: number): Promise<void> {
-    this.syncState = {
-      lastSyncedLedger: fromLedger,
-      targetLedger: toLedger,
-      inProgress: true,
-    };
+    const cappedTo = Math.min(toLedger, fromLedger + MAX_GAP);
+    this.targetLedger = cappedTo;
+    this.inProgress = true;
 
-    for (let seq = fromLedger + 1; seq <= toLedger; seq++) {
-      try {
-        const ledger = await this.fetchLedger(seq);
-        await this.processLedger(ledger);
-        this.syncState.lastSyncedLedger = seq;
-      } catch (error) {
-        console.error(`Failed to sync ledger ${String(seq)}:`, error);
-        break;
+    try {
+      for (
+        let batchStart = fromLedger + 1;
+        batchStart <= cappedTo;
+        batchStart += this.concurrency
+      ) {
+        const batchEnd = Math.min(batchStart + this.concurrency - 1, cappedTo);
+        const seqs = Array.from({ length: batchEnd - batchStart + 1 }, (_, i) => batchStart + i);
+
+        await Promise.all(
+          seqs.map(async (seq) => {
+            for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+              try {
+                const ledger = await this.fetchLedger(seq);
+                await this.processLedger(ledger);
+                return;
+              } catch (err) {
+                if (attempt < MAX_RETRIES - 1) {
+                  await this.sleep(2 ** attempt * 200);
+                } else {
+                  console.error(
+                    `Skipping ledger ${String(seq)} after ${String(MAX_RETRIES)} retries:`,
+                    err,
+                  );
+                  this.errorCount++;
+                }
+              }
+            }
+          }),
+        );
+
+        this.lastSyncedLedger = batchEnd;
+
+        const crossedBoundary =
+          Math.floor(batchEnd / CHECKPOINT_INTERVAL) >
+          Math.floor((batchStart - 1) / CHECKPOINT_INTERVAL);
+
+        if (crossedBoundary || batchEnd === cappedTo) {
+          await this.checkpoint();
+        }
       }
+    } finally {
+      this.inProgress = false;
     }
+  }
 
-    this.syncState.inProgress = false;
+  private async checkpoint(): Promise<void> {
+    await this.prisma.ledgerSyncState.upsert({
+      where: { syncId: SYNC_ID },
+      update: { lastSyncedLedger: this.lastSyncedLedger },
+      create: { syncId: SYNC_ID, lastSyncedLedger: this.lastSyncedLedger },
+    });
+    this.lastCheckpointAt = new Date();
   }
 
   private async pollLatestLedger(): Promise<void> {
+    if (this.inProgress) return;
+
     try {
       const response = await this.rpcFetch(`${this.rpcUrl}/ledgers/latest`);
       const latest = (await response.json()) as { sequence: number };
-      if (latest.sequence > this.syncState.lastSyncedLedger) {
-        await this.catchUp(this.syncState.lastSyncedLedger, latest.sequence);
+      if (latest.sequence > this.lastSyncedLedger) {
+        await this.catchUp(this.lastSyncedLedger, latest.sequence);
       }
     } catch (error) {
       console.error('Polling error:', error);
@@ -90,7 +163,13 @@ export class LedgerEventSynchronizer {
   }
 
   getSyncState(): SyncState {
-    return { ...this.syncState };
+    return {
+      lastSyncedLedger: this.lastSyncedLedger,
+      targetLedger: this.targetLedger,
+      inProgress: this.inProgress,
+      lastCheckpointAt: this.lastCheckpointAt,
+      errorCount: this.errorCount,
+    };
   }
 
   private rpcFetch(url: string, init: RequestInit = {}): Promise<Response> {
@@ -108,5 +187,9 @@ export class LedgerEventSynchronizer {
         'rpc.url': url,
       },
     );
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }

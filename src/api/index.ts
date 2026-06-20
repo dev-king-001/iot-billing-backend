@@ -2,12 +2,15 @@ import { fileURLToPath } from 'node:url';
 import type { FastifyInstance } from 'fastify';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import { PrismaClient } from '@prisma/client';
 import { getEnv } from '../config/env.js';
 import { initTelemetry, shutdownTelemetry } from '../core/diagnostics/otel.js';
 import { registerAuthRoutes } from './routes/auth.js';
 import { registerAnalyticsRoutes } from './routes/analytics.js';
+import { registerAdminRoutes } from './routes/admin.js';
 import { registerTracingHooks } from './middleware/tracing.js';
 import { TelemetryNotificationListener, closeTimescalePool } from '../database/pool_manager.js';
+import { LedgerEventSynchronizer } from '../core/blockchain/event_listener.js';
 
 export async function buildApp(): Promise<FastifyInstance> {
   const env = getEnv();
@@ -40,14 +43,25 @@ async function start(): Promise<void> {
   const env = getEnv();
   const app = await buildApp();
 
+  const prisma = new PrismaClient();
+  const synchronizer = new LedgerEventSynchronizer(prisma, env.SOROBAN_RPC_URL, {
+    startingLedger: env.LEDGER_START,
+    concurrency: env.LEDGER_SYNC_CONCURRENCY,
+  });
+
+  registerAdminRoutes(app, synchronizer);
+
   const listener = new TelemetryNotificationListener();
   await listener.start();
+  await synchronizer.start();
 
   const shutdown = async (signal: string): Promise<void> => {
     app.log.info(`Received ${signal}, shutting down`);
+    synchronizer.stop();
     await listener.stop();
     await closeTimescalePool();
     await app.close();
+    await prisma.$disconnect();
     await shutdownTelemetry();
     process.exit(0);
   };
@@ -64,8 +78,10 @@ async function start(): Promise<void> {
     console.log(`Server running on ${env.HOST}:${String(env.PORT)}`);
   } catch (err) {
     app.log.error(err);
+    synchronizer.stop();
     await listener.stop();
     await closeTimescalePool();
+    await prisma.$disconnect();
     await shutdownTelemetry();
     process.exit(1);
   }
