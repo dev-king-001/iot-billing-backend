@@ -54,7 +54,7 @@ describe('LedgerEventSynchronizer', () => {
 
   it('loads lastSyncedLedger from DB on start', async () => {
     const prisma = makePrismaMock({ lastSyncedLedger: 500 });
-    const sync = new LedgerEventSynchronizer(prisma as never, 'http://rpc', {
+    const sync = new LedgerEventSynchronizer(prisma, 'http://rpc', {
       startingLedger: 100,
     });
     await sync.start();
@@ -64,7 +64,7 @@ describe('LedgerEventSynchronizer', () => {
 
   it('defaults to startingLedger when DB has no row', async () => {
     const prisma = makePrismaMock(null);
-    const sync = new LedgerEventSynchronizer(prisma as never, 'http://rpc', {
+    const sync = new LedgerEventSynchronizer(prisma, 'http://rpc', {
       startingLedger: 100,
     });
     await sync.start();
@@ -80,7 +80,7 @@ describe('LedgerEventSynchronizer', () => {
       return makeLatestResponse(0);
     });
 
-    const sync = new LedgerEventSynchronizer(prisma as never, 'http://rpc', {
+    const sync = new LedgerEventSynchronizer(prisma, 'http://rpc', {
       startingLedger: 0,
       concurrency: 5,
     });
@@ -106,7 +106,7 @@ describe('LedgerEventSynchronizer', () => {
       return makeLatestResponse(0);
     });
 
-    const sync = new LedgerEventSynchronizer(prisma as never, 'http://rpc', {
+    const sync = new LedgerEventSynchronizer(prisma, 'http://rpc', {
       startingLedger: 0,
       concurrency: 10,
     });
@@ -138,7 +138,7 @@ describe('LedgerEventSynchronizer', () => {
       return makeLatestResponse(0);
     });
 
-    const sync = new LedgerEventSynchronizer(prisma as never, 'http://rpc', {
+    const sync = new LedgerEventSynchronizer(prisma, 'http://rpc', {
       startingLedger: 0,
       concurrency: 5,
     });
@@ -167,7 +167,7 @@ describe('LedgerEventSynchronizer', () => {
       return makeLatestResponse(0);
     });
 
-    const sync = new LedgerEventSynchronizer(prisma as never, 'http://rpc', {
+    const sync = new LedgerEventSynchronizer(prisma, 'http://rpc', {
       startingLedger: 0,
       concurrency: 5,
     });
@@ -185,7 +185,7 @@ describe('LedgerEventSynchronizer', () => {
 
   it('caps gap at MAX_GAP (172_800)', () => {
     const prisma = makePrismaMock(null);
-    const sync = new LedgerEventSynchronizer(prisma as never, 'http://rpc');
+    const sync = new LedgerEventSynchronizer(prisma, 'http://rpc');
 
     // targetLedger is set synchronously before any await inside catchUp
     void sync.catchUp(0, 200_000);
@@ -211,7 +211,7 @@ describe('LedgerEventSynchronizer', () => {
       return makeLatestResponse(0);
     });
 
-    const sync = new LedgerEventSynchronizer(prisma as never, 'http://rpc', {
+    const sync = new LedgerEventSynchronizer(prisma, 'http://rpc', {
       startingLedger: 0,
       concurrency: 10,
       pollIntervalMs: 100,
@@ -283,7 +283,7 @@ describe('GET /api/admin/sync-status', () => {
     vi.useFakeTimers();
     vi.spyOn(global, 'fetch');
 
-    const sync = new LedgerEventSynchronizer(prisma as never, 'http://rpc');
+    const sync = new LedgerEventSynchronizer(prisma, 'http://rpc');
     await sync.start();
     sync.stop();
 

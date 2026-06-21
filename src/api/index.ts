@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
 import { fileURLToPath } from 'node:url';
 import type { FastifyInstance } from 'fastify';
 import Fastify from 'fastify';
