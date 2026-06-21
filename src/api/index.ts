@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
 import { fileURLToPath } from 'node:url';
 import type { FastifyInstance } from 'fastify';
 import Fastify from 'fastify';
@@ -55,6 +56,7 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   registerAuthRoutes(app);
   registerAnalyticsRoutes(app);
+  registerCircuitHealth(app);
 
   return app;
 }
