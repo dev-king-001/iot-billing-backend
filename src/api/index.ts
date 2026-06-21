@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
 import { fileURLToPath } from 'node:url';
 import type { FastifyInstance } from 'fastify';
 import Fastify from 'fastify';
@@ -11,6 +12,7 @@ import { registerAdminRoutes } from './routes/admin.js';
 import { registerTracingHooks } from './middleware/tracing.js';
 import { TelemetryNotificationListener, closeTimescalePool } from '../database/pool_manager.js';
 import { LedgerEventSynchronizer } from '../core/blockchain/event_listener.js';
+import { registerCircuitHealth } from './health.js';
 
 export async function buildApp(): Promise<FastifyInstance> {
   const env = getEnv();
@@ -33,6 +35,7 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   registerAuthRoutes(app);
   registerAnalyticsRoutes(app);
+  registerCircuitHealth(app);
 
   return app;
 }
