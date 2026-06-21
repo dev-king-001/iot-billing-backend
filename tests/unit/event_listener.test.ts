@@ -10,9 +10,7 @@ import { PrismaClient } from '@prisma/client';
 
 // ─── Prisma mock factory ───────────────────────────────────────────────────
 
-function makePrismaMock(
-  foundRow: { lastSyncedLedger: number } | null = null,
-): any {
+function makePrismaMock(foundRow: { lastSyncedLedger: number } | null = null): any {
   const upsertMock = vi.fn().mockResolvedValue(undefined);
   const prisma = {
     ledgerSyncState: {
