@@ -29,17 +29,17 @@ export class SorobanRpcClient {
   private config: CircuitBreakerConfig;
   private tracer = getDiagnosticsTracer();
 
-private readonly maxQueueSize = 10_000;
-private requestQueue: {
-  fn: () => Promise<any>;
-  resolve: (value: any) => void;
-  reject: (reason?: any) => void;
-}[] = [];
+  private readonly maxQueueSize = 10_000;
+  private requestQueue: {
+    fn: () => Promise<any>;
+    resolve: (value: any) => void;
+    reject: (reason?: any) => void;
+  }[] = [];
 
-private processing = false;
-private backoff = new BackoffCalculator();
+  private processing = false;
+  private backoff = new BackoffCalculator();
 
-private readonly clientLabel = 'soroban';
+  private readonly clientLabel = 'soroban';
   constructor(
     private rpcUrl: string,
     config: Partial<CircuitBreakerConfig> = {},
@@ -135,7 +135,6 @@ private readonly clientLabel = 'soroban';
       void this.processQueue();
     }
   }
-
 
   private onSuccess(): void {
     // Reset backoff on any success

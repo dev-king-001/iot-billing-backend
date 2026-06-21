@@ -5,7 +5,12 @@ export class BackoffCalculator {
   private jitterFactor: number; // 0.1 means +/-10%
   private attempt: number;
 
-  constructor({ baseDelayMs = 1000, multiplier = 2, maxDelayMs = 120_000, jitterFactor = 0.1 } = {}) {
+  constructor({
+    baseDelayMs = 1000,
+    multiplier = 2,
+    maxDelayMs = 120_000,
+    jitterFactor = 0.1,
+  } = {}) {
     this.baseDelayMs = baseDelayMs;
     this.multiplier = multiplier;
     this.maxDelayMs = maxDelayMs;

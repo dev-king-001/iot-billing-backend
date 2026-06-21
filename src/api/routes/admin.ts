@@ -222,7 +222,7 @@ export function registerAdminRoutes(
             .send({ success: false, error: 'Certificate is already revoked' });
         }
 
-        await prisma.$transaction(async (tx) => {
+        await prisma.$transaction(async (tx: any) => {
           await tx.hardwareCertificate.update({
             where: { serial },
             data: { revoked: true },
