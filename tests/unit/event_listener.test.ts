@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unnecessary-type-assertion */
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-explicit-any */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { MockInstance } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
@@ -113,7 +113,7 @@ describe('LedgerEventSynchronizer', () => {
     await sync.catchUp(0, 128);
 
     // upsert should be called at least twice (once per 64-ledger boundary + final)
-    expect(prisma.ledgerSyncState.upsert).toHaveBeenCalledTimes(2);
+    expect(prisma.ledgerSyncState.upsert as any).toHaveBeenCalledTimes(2);
     expect(sync.getSyncState().lastSyncedLedger).toBe(128);
   });
 
