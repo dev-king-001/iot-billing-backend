@@ -43,7 +43,24 @@ vi.mock('node:perf_hooks', async () => {
 });
 
 import { GcPauseMonitor } from '../../src/api/metrics/gc_monitor.js';
-import { gcPauseDuration, GC_PAUSE_BUCKETS_MS } from '../../src/api/metrics/prometheus.js';
+import { gcPauseDuration, GC_PAUSE_BUCKETS_MS, eventLoopLag } from '../../src/api/metrics/prometheus.js';
+import Fastify from 'fastify';
+import { registerReadinessHealthCheck } from '../../src/api/health.js';
+
+vi.mock('pg', () => ({
+  default: {
+    Pool: vi.fn(() => ({
+      query: vi.fn().mockResolvedValue({}),
+    })),
+  },
+}));
+
+vi.mock('ioredis', () => ({
+  Redis: vi.fn(() => ({
+    ping: vi.fn().mockResolvedValue('PONG'),
+  })),
+}));
+
 
 describe('GcPauseMonitor', () => {
   let collectSpy: MockInstance;
@@ -131,6 +148,35 @@ describe('GcPauseMonitor', () => {
 
     expect(collectSpy).not.toHaveBeenCalled();
     monitor.stop();
+  });
+});
+
+describe('Health Check GC Simulation', () => {
+  it('forces a GC pause and verifies health check returns within 200ms using cache', async () => {
+    const app = Fastify();
+    registerReadinessHealthCheck(app);
+
+    // Initial request to populate cache
+    const res1 = await app.inject({ method: 'GET', url: '/health' });
+    expect(res1.statusCode).toBe(200);
+    expect(JSON.parse(res1.payload).status).toBe('ok');
+
+    const startTime = Date.now();
+    
+    // Simulate GC pause by allocating and collecting memory
+    const arr = new Array(1e6).fill('garbage');
+    arr.length = 0;
+    if (global.gc) {
+      global.gc();
+    }
+
+    const res2 = await app.inject({ method: 'GET', url: '/health' });
+    const duration = Date.now() - startTime;
+
+    expect(duration).toBeLessThan(200);
+    expect(res2.statusCode).toBe(200);
+    const body = JSON.parse(res2.payload);
+    expect(body.cached).toBe(true);
   });
 });
 

@@ -60,6 +60,11 @@ export const ingestionQueueDepth: promClient.Gauge = new promClient.Gauge({
   help: 'Current ingestion task queue depth',
 });
 
+export const eventLoopLag: promClient.Gauge = new promClient.Gauge({
+  name: 'node_event_loop_lag_ms',
+  help: 'Current event loop lag in ms',
+});
+
 // Required GC pause buckets per issue #19: 1, 5, 10, 25, 50, 100, 250, 500 ms
 export const GC_PAUSE_BUCKETS_MS = [1, 5, 10, 25, 50, 100, 250, 500] as const;
 
