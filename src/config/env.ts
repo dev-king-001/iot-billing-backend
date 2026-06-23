@@ -27,15 +27,58 @@ const envSchema = z.object({
 
 export type Env = z.infer<typeof envSchema>;
 
+/** One environment-validation failure, preserving the field, code, and reason. */
+export interface EnvValidationIssue {
+  path: string;
+  code: string;
+  message: string;
+}
+
+/**
+ * Join a Zod issue path into a stable, readable string, rendering numeric
+ * (array index) segments in bracket notation: `["a", 2, "b"]` -> `"a[2].b"`.
+ *
+ * This keeps logged paths short and unambiguous without ever truncating them,
+ * which is what defeated debugging in the deeply nested case described by
+ * issue #69. An empty path (a root-level error) renders as `"(root)"`.
+ */
+export function compactPath(path: readonly (string | number)[]): string {
+  let out = '';
+  for (const segment of path) {
+    if (typeof segment === 'number') {
+      out += `[${String(segment)}]`;
+    } else {
+      out += out === '' ? segment : `.${segment}`;
+    }
+  }
+  return out === '' ? '(root)' : out;
+}
+
+/**
+ * Convert a {@link z.ZodError} into one structured entry per issue.
+ *
+ * Unlike `error.flatten()`, this preserves the issue `code` and the full,
+ * compacted path for *every* failure, so no failing field is collapsed away or
+ * hidden behind truncation. Callers can log each entry as its own structured
+ * record.
+ */
+export function formatEnvIssues(error: z.ZodError): EnvValidationIssue[] {
+  return error.issues.map((issue) => ({
+    path: compactPath(issue.path),
+    code: issue.code,
+    message: issue.message,
+  }));
+}
+
 let cachedEnv: Env | null = null;
 
 export function loadEnv(): Env {
   if (cachedEnv) return cachedEnv;
   const parsed = envSchema.safeParse(process.env);
   if (!parsed.success) {
-    throw new Error(
-      `Environment validation failed: ${JSON.stringify(parsed.error.flatten().fieldErrors)}`,
-    );
+    const issues = formatEnvIssues(parsed.error);
+    const detail = issues.map((issue) => `  ${issue.path}: ${issue.message} (${issue.code})`);
+    throw new Error(['Environment validation failed:', ...detail].join('\n'));
   }
   cachedEnv = parsed.data;
   return cachedEnv;
