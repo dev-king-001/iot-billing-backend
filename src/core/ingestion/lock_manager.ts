@@ -188,10 +188,7 @@ export class AdvisoryLockManager extends EventEmitter {
    * Register a one-shot listener that fires when this specific lock expires.
    * Automatically cleaned up on expiry or explicit release.
    */
-  onExpired(
-    lockId: number,
-    handler: (payload: { lockId: number }) => void,
-  ): void {
+  onExpired(lockId: number, handler: (payload: { lockId: number }) => void): void {
     const wrapped = (payload: { lockId: number }): void => {
       if (payload.lockId === lockId) {
         handler(payload);
@@ -222,10 +219,7 @@ export class AdvisoryLockManager extends EventEmitter {
    * Register a one-shot listener that fires when this specific lock is released.
    * Automatically cleaned up on release or expiry.
    */
-  onReleased(
-    lockId: number,
-    handler: (payload: { lockId: number }) => void,
-  ): void {
+  onReleased(lockId: number, handler: (payload: { lockId: number }) => void): void {
     const wrapped = (payload: { lockId: number }): void => {
       if (payload.lockId === lockId) {
         handler(payload);
