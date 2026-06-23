@@ -1,4 +1,4 @@
-import { Buffer } from 'node:buffer';
+﻿import { Buffer } from 'node:buffer';
 
 const HEADER_SIZE = 8;
 const METRICS_ENTRY_SIZE = 12;
@@ -59,5 +59,14 @@ export class TelemetryStreamParser {
 
   reset(): void {
     this.offset = 0;
+  }
+}
+
+/**
+ * Helper to generate a sliding window ACK message for WebSocket clients.
+ */
+export class AckProtocol {
+  static createAckMessage(sequence: number): string {
+    return JSON.stringify({ type: 'ack', seq: sequence });
   }
 }
